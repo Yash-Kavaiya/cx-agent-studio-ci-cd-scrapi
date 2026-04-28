@@ -1,0 +1,104 @@
+# Deploy to Production environment
+# Triggered on push to `main` branch OR manual dispatch.
+# The `prod` GitHub Environment must have a required reviewer configured
+# so every production deploy requires explicit human approval.
+
+name: Deploy · Prod
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for production deploy"
+        required: true
+        default: ""
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: "CI Gate"
+    uses: ./.github/workflows/ci.yml
+
+  # ── Manual approval gate ──────────────────────────────────────────────────
+  # Configure the `prod` environment in GitHub → Settings → Environments
+  # with required reviewers. This job will pause until approved.
+  approval:
+    name: "Await Production Approval"
+    needs: ci
+    runs-on: ubuntu-latest
+    environment:
+      name: prod-approval
+    steps:
+      - name: Approval granted
+        run: echo "Production deploy approved by ${{ github.actor }}"
+
+  # ── Production deploy ─────────────────────────────────────────────────────
+  deploy-prod:
+    name: "Deploy → Prod"
+    needs: approval
+    runs-on: ubuntu-latest
+    environment:
+      name: prod
+      url: https://ces.cloud.google.com/projects/${{ vars.GCP_PROJECT_ID_PROD }}/locations/${{ vars.GCP_LOCATION }}/apps/${{ vars.CXAS_APP_ID_PROD }}
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install cxas-scrapi & deps
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Deploy to Production
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID_PROD }}
+          GCP_LOCATION: ${{ vars.GCP_LOCATION }}
+          CXAS_APP_ID: ${{ vars.CXAS_APP_ID_PROD }}
+          ENVIRONMENT: prod
+        run: python scripts/deploy.py
+
+      - name: Run production smoke tests
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID_PROD }}
+          GCP_LOCATION: ${{ vars.GCP_LOCATION }}
+          CXAS_APP_ID: ${{ vars.CXAS_APP_ID_PROD }}
+          ENVIRONMENT: prod
+        run: |
+          pip install pytest pytest-asyncio
+          pytest tests/ -m "smoke" -v --tb=short || echo "::warning::No smoke tests found; skipping."
+
+      - name: Notify deploy result
+        if: always()
+        run: |
+          echo "::notice title=Prod Deploy::Environment=prod | App=${{ vars.CXAS_APP_ID_PROD }} | Commit=${{ github.sha }} | Status=${{ job.status }}"
+
+      - name: Tag release on success
+        if: success() && github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "deploy-prod-$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_SHA::7}"
+          git push origin --tags

@@ -1,0 +1,72 @@
+# Deploy to Dev environment
+# Triggered automatically when commits land on the `develop` branch
+# (after CI passes) or via manual workflow dispatch.
+
+name: Deploy · Dev
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for manual deploy"
+        required: false
+        default: "Manual trigger"
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false  # never cancel an active deploy
+
+jobs:
+  # Re-run the full CI gate before deploying
+  ci:
+    name: "CI Gate"
+    uses: ./.github/workflows/ci.yml
+
+  deploy-dev:
+    name: "Deploy → Dev"
+    needs: ci
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+      url: https://ces.cloud.google.com/projects/${{ vars.GCP_PROJECT_ID_DEV }}/locations/${{ vars.GCP_LOCATION }}/apps/${{ vars.CXAS_APP_ID_DEV }}
+
+    permissions:
+      contents: read
+      id-token: write  # required for Workload Identity Federation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install cxas-scrapi & deps
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Deploy to Dev
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID_DEV }}
+          GCP_LOCATION: ${{ vars.GCP_LOCATION }}
+          CXAS_APP_ID: ${{ vars.CXAS_APP_ID_DEV }}
+          ENVIRONMENT: dev
+        run: python scripts/deploy.py
+
+      - name: Notify deploy result
+        if: always()
+        run: |
+          echo "::notice title=Dev Deploy::Environment=dev | App=${{ vars.CXAS_APP_ID_DEV }} | Status=${{ job.status }}"

@@ -1,0 +1,113 @@
+# Google Cloud Build configuration for cx-agent-studio (cxas-scrapi)
+#
+# Mirrors the GitHub Actions pipeline.
+# Trigger variables (set in Cloud Build trigger UI or substitutions):
+#   _ENVIRONMENT  – dev | qa | prod
+#   _APP_ID       – CES app UUID for the target environment
+#   _LOCATION     – GCP region (default: us)
+#
+# Service account needs:
+#   - roles/ces.developer  (or equivalent) on the target GCP project
+#   - Secret Manager Secret Accessor if secrets are stored in SM
+
+substitutions:
+  _ENVIRONMENT: dev
+  _LOCATION: us
+  _APP_ID: "180a991e-4aa8-49ac-b363-4ef946fb8293"
+  _PYTHON_VERSION: "3.13"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  dynamic_substitutions: true
+
+steps:
+  # ── Stage 1: Lint ─────────────────────────────────────────────────────────
+  - id: install-ruff
+    name: python:${_PYTHON_VERSION}
+    entrypoint: pip
+    args: [install, ruff]
+
+  - id: lint-check
+    name: python:${_PYTHON_VERSION}
+    entrypoint: ruff
+    args: [check, .]
+    waitFor: [install-ruff]
+
+  - id: lint-format
+    name: python:${_PYTHON_VERSION}
+    entrypoint: ruff
+    args: [format, --check, .]
+    waitFor: [install-ruff]
+
+  # ── Stage 2: Install dependencies ─────────────────────────────────────────
+  - id: install-deps
+    name: python:${_PYTHON_VERSION}
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-asyncio pytest-xdist pytest-cov
+        pip install -e .
+    waitFor: [lint-check, lint-format]
+
+  # ── Stage 2a: Tools tests ──────────────────────────────────────────────────
+  - id: test-tools
+    name: python:${_PYTHON_VERSION}
+    entrypoint: pytest
+    args:
+      - tests/cxas_scrapi/core/test_tools.py
+      - tests/cxas_scrapi/evals/test_tool_evals.py
+      - -v
+      - --tb=short
+      - --junit-xml=/workspace/reports/test-tools.xml
+    waitFor: [install-deps]
+
+  # ── Stage 2b: Callback tests ───────────────────────────────────────────────
+  - id: test-callbacks
+    name: python:${_PYTHON_VERSION}
+    entrypoint: pytest
+    args:
+      - tests/cxas_scrapi/core/test_callbacks.py
+      - tests/cxas_scrapi/evals/test_callback_evals.py
+      - -v
+      - --tb=short
+      - --junit-xml=/workspace/reports/test-callbacks.xml
+    waitFor: [install-deps]
+
+  # ── Stage 3: Full CI test suite ───────────────────────────────────────────
+  - id: test-all
+    name: python:${_PYTHON_VERSION}
+    entrypoint: pytest
+    args:
+      - tests/
+      - -n
+      - auto
+      - -v
+      - --tb=short
+      - --junit-xml=/workspace/reports/test-all.xml
+      - --cov=src/cxas_scrapi
+      - --cov-report=xml:/workspace/reports/coverage.xml
+    waitFor: [test-tools, test-callbacks]
+
+  # ── Stage 4: Deploy ───────────────────────────────────────────────────────
+  - id: deploy
+    name: python:${_PYTHON_VERSION}
+    entrypoint: python
+    args: [scripts/deploy.py]
+    env:
+      - GCP_PROJECT_ID=$PROJECT_ID
+      - GCP_LOCATION=${_LOCATION}
+      - CXAS_APP_ID=${_APP_ID}
+      - ENVIRONMENT=${_ENVIRONMENT}
+    waitFor: [test-all]
+
+artifacts:
+  objects:
+    location: gs://$PROJECT_ID-build-artifacts/cxas-scrapi/$BUILD_ID/
+    paths:
+      - /workspace/reports/test-tools.xml
+      - /workspace/reports/test-callbacks.xml
+      - /workspace/reports/test-all.xml
+      - /workspace/reports/coverage.xml

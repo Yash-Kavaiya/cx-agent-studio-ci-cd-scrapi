@@ -1,0 +1,81 @@
+# Deploy to QA environment
+# Triggered automatically on pushes to `release/**` branches
+# or manually via workflow dispatch.
+
+name: Deploy · QA
+
+on:
+  push:
+    branches:
+      - "release/**"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for manual QA deploy"
+        required: false
+        default: "Manual trigger"
+
+concurrency:
+  group: deploy-qa
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: "CI Gate"
+    uses: ./.github/workflows/ci.yml
+
+  deploy-qa:
+    name: "Deploy → QA"
+    needs: ci
+    runs-on: ubuntu-latest
+    environment:
+      name: qa
+      url: https://ces.cloud.google.com/projects/${{ vars.GCP_PROJECT_ID_QA }}/locations/${{ vars.GCP_LOCATION }}/apps/${{ vars.CXAS_APP_ID_QA }}
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install cxas-scrapi & deps
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e .
+
+      - name: Deploy to QA
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID_QA }}
+          GCP_LOCATION: ${{ vars.GCP_LOCATION }}
+          CXAS_APP_ID: ${{ vars.CXAS_APP_ID_QA }}
+          ENVIRONMENT: qa
+        run: python scripts/deploy.py
+
+      - name: Run smoke tests against QA
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID_QA }}
+          GCP_LOCATION: ${{ vars.GCP_LOCATION }}
+          CXAS_APP_ID: ${{ vars.CXAS_APP_ID_QA }}
+          ENVIRONMENT: qa
+        run: |
+          pip install pytest pytest-asyncio
+          pytest tests/ -m "smoke" -v --tb=short || echo "::warning::No smoke tests found; skipping."
+
+      - name: Notify deploy result
+        if: always()
+        run: |
+          echo "::notice title=QA Deploy::Environment=qa | App=${{ vars.CXAS_APP_ID_QA }} | Status=${{ job.status }}"

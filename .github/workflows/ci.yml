@@ -1,0 +1,175 @@
+# CI pipeline for cx-agent-studio (cxas-scrapi)
+# Stages: lint → test:tools → test:callbacks → test:all
+# Runs on PRs and pushes to main/develop/release branches.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - "release/**"
+      - "feature/**"
+  pull_request:
+    branches:
+      - main
+      - develop
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  # ────────────────────────────────────────────────
+  # Stage 1 – Linting
+  # ────────────────────────────────────────────────
+  lint:
+    name: "Stage 1 · Lint"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff – check style & imports
+        run: ruff check .
+
+      - name: Ruff – check formatting
+        run: ruff format --check .
+
+  # ────────────────────────────────────────────────
+  # Stage 2a – Tools testing
+  # ────────────────────────────────────────────────
+  test-tools:
+    name: "Stage 2a · Test: Tools"
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+          pip install -e .
+
+      - name: Run tools unit tests
+        run: |
+          pytest tests/cxas_scrapi/core/test_tools.py \
+                 tests/cxas_scrapi/evals/test_tool_evals.py \
+                 -v --tb=short \
+                 --junit-xml=reports/test-tools.xml
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-tools-report
+          path: reports/test-tools.xml
+          retention-days: 7
+
+  # ────────────────────────────────────────────────
+  # Stage 2b – Callback testing
+  # ────────────────────────────────────────────────
+  test-callbacks:
+    name: "Stage 2b · Test: Callbacks"
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+          pip install -e .
+
+      - name: Run callback unit tests
+        run: |
+          pytest tests/cxas_scrapi/core/test_callbacks.py \
+                 tests/cxas_scrapi/evals/test_callback_evals.py \
+                 -v --tb=short \
+                 --junit-xml=reports/test-callbacks.xml
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-callbacks-report
+          path: reports/test-callbacks.xml
+          retention-days: 7
+
+  # ────────────────────────────────────────────────
+  # Stage 3 – Full CI test suite (all tests)
+  # ────────────────────────────────────────────────
+  test-all:
+    name: "Stage 3 · CI: Full Test Suite"
+    needs: [test-tools, test-callbacks]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-xdist
+          pip install -e .
+
+      - name: Run full test suite
+        run: |
+          pytest tests/ \
+                 -n auto \
+                 -v --tb=short \
+                 --junit-xml=reports/test-all.xml \
+                 --cov=src/cxas_scrapi \
+                 --cov-report=xml:reports/coverage.xml \
+                 --cov-report=term-missing
+
+      - name: Upload full test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-all-report
+          path: |
+            reports/test-all.xml
+            reports/coverage.xml
+          retention-days: 14
+
+      - name: Add coverage comment to PR
+        if: github.event_name == 'pull_request'
+        uses: MishaKav/pytest-coverage-comment@main
+        with:
+          pytest-xml-coverage-path: reports/coverage.xml
+          junitxml-path: reports/test-all.xml
