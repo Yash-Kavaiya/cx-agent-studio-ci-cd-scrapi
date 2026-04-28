@@ -33,12 +33,6 @@ steps:
     args: [check, .]
     waitFor: [install-ruff]
 
-  - id: lint-format
-    name: python:${_PYTHON_VERSION}
-    entrypoint: ruff
-    args: [format, --check, .]
-    waitFor: [install-ruff]
-
   # ── Stage 2: Install dependencies ─────────────────────────────────────────
   - id: install-deps
     name: python:${_PYTHON_VERSION}

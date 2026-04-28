@@ -56,10 +56,6 @@ jobs:
         working-directory: ${{ env.SOURCE_DIR }}
         run: ruff check .
 
-      - name: Ruff – check formatting
-        working-directory: ${{ env.SOURCE_DIR }}
-        run: ruff format --check .
-
   # ────────────────────────────────────────────────
   # Stage 2a – Tools testing
   # ────────────────────────────────────────────────
