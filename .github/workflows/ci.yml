@@ -1,6 +1,8 @@
 # CI pipeline for cx-agent-studio (cxas-scrapi)
 # Stages: lint → test:tools → test:callbacks → test:all
-# Runs on PRs and pushes to main/develop/release branches.
+#
+# This repo holds only CI/CD config; the Python source is checked out
+# from GoogleCloudPlatform/cxas-scrapi into ./src on every job.
 
 name: CI
 
@@ -22,6 +24,8 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.13"
+  SOURCE_REPO: "GoogleCloudPlatform/cxas-scrapi"
+  SOURCE_DIR: "src"
 
 jobs:
   # ────────────────────────────────────────────────
@@ -31,21 +35,29 @@ jobs:
     name: "Stage 1 · Lint"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout CI/CD config repo
+        uses: actions/checkout@v4
+
+      - name: Checkout cxas-scrapi source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          path: ${{ env.SOURCE_DIR }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
       - name: Install ruff
         run: pip install ruff
 
       - name: Ruff – check style & imports
+        working-directory: ${{ env.SOURCE_DIR }}
         run: ruff check .
 
       - name: Ruff – check formatting
+        working-directory: ${{ env.SOURCE_DIR }}
         run: ruff format --check .
 
   # ────────────────────────────────────────────────
@@ -56,15 +68,22 @@ jobs:
     needs: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout CI/CD config repo
+        uses: actions/checkout@v4
+
+      - name: Checkout cxas-scrapi source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          path: ${{ env.SOURCE_DIR }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
       - name: Install dependencies
+        working-directory: ${{ env.SOURCE_DIR }}
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
@@ -72,7 +91,9 @@ jobs:
           pip install -e .
 
       - name: Run tools unit tests
+        working-directory: ${{ env.SOURCE_DIR }}
         run: |
+          mkdir -p reports
           pytest tests/cxas_scrapi/core/test_tools.py \
                  tests/cxas_scrapi/evals/test_tool_evals.py \
                  -v --tb=short \
@@ -83,7 +104,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-tools-report
-          path: reports/test-tools.xml
+          path: ${{ env.SOURCE_DIR }}/reports/test-tools.xml
           retention-days: 7
 
   # ────────────────────────────────────────────────
@@ -94,15 +115,22 @@ jobs:
     needs: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout CI/CD config repo
+        uses: actions/checkout@v4
+
+      - name: Checkout cxas-scrapi source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          path: ${{ env.SOURCE_DIR }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
       - name: Install dependencies
+        working-directory: ${{ env.SOURCE_DIR }}
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
@@ -110,7 +138,9 @@ jobs:
           pip install -e .
 
       - name: Run callback unit tests
+        working-directory: ${{ env.SOURCE_DIR }}
         run: |
+          mkdir -p reports
           pytest tests/cxas_scrapi/core/test_callbacks.py \
                  tests/cxas_scrapi/evals/test_callback_evals.py \
                  -v --tb=short \
@@ -121,7 +151,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-callbacks-report
-          path: reports/test-callbacks.xml
+          path: ${{ env.SOURCE_DIR }}/reports/test-callbacks.xml
           retention-days: 7
 
   # ────────────────────────────────────────────────
@@ -132,23 +162,32 @@ jobs:
     needs: [test-tools, test-callbacks]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout CI/CD config repo
+        uses: actions/checkout@v4
+
+      - name: Checkout cxas-scrapi source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          path: ${{ env.SOURCE_DIR }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
 
       - name: Install dependencies
+        working-directory: ${{ env.SOURCE_DIR }}
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio pytest-xdist
+          pip install pytest pytest-asyncio pytest-xdist pytest-cov
           pip install -e .
 
       - name: Run full test suite
+        working-directory: ${{ env.SOURCE_DIR }}
         run: |
+          mkdir -p reports
           pytest tests/ \
                  -n auto \
                  -v --tb=short \
@@ -163,13 +202,13 @@ jobs:
         with:
           name: test-all-report
           path: |
-            reports/test-all.xml
-            reports/coverage.xml
+            ${{ env.SOURCE_DIR }}/reports/test-all.xml
+            ${{ env.SOURCE_DIR }}/reports/coverage.xml
           retention-days: 14
 
       - name: Add coverage comment to PR
         if: github.event_name == 'pull_request'
         uses: MishaKav/pytest-coverage-comment@main
         with:
-          pytest-xml-coverage-path: reports/coverage.xml
-          junitxml-path: reports/test-all.xml
+          pytest-xml-coverage-path: ${{ env.SOURCE_DIR }}/reports/coverage.xml
+          junitxml-path: ${{ env.SOURCE_DIR }}/reports/test-all.xml

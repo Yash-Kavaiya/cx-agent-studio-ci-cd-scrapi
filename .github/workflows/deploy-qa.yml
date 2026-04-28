@@ -37,7 +37,14 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout CI/CD config repo
+        uses: actions/checkout@v4
+
+      - name: Checkout cxas-scrapi source
+        uses: actions/checkout@v4
+        with:
+          repository: GoogleCloudPlatform/cxas-scrapi
+          path: src
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -49,9 +56,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-          cache: pip
 
       - name: Install cxas-scrapi & deps
+        working-directory: src
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
@@ -66,6 +73,7 @@ jobs:
         run: python scripts/deploy.py
 
       - name: Run smoke tests against QA
+        working-directory: src
         env:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID_QA }}
           GCP_LOCATION: ${{ vars.GCP_LOCATION }}

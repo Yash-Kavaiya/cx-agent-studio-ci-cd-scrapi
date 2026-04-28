@@ -1,0 +1,187 @@
+# One-time bootstrap: creates the GCP service account, grants IAM roles,
+# and sets up Workload Identity Federation so all other workflows can
+# authenticate without a stored JSON key.
+#
+# Trigger: manual only (workflow_dispatch)
+# Who runs it: a human with `gcloud` / Owner access on the GCP project.
+#
+# After this workflow succeeds once, it never needs to run again.
+
+name: Bootstrap · GCP + WIF Setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      gcp_project_id:
+        description: "GCP Project ID"
+        required: true
+        default: "genaiguruyoutube"
+      gcp_location:
+        description: "GCP Location"
+        required: true
+        default: "us"
+      github_org:
+        description: "GitHub org or username (owner of this repo)"
+        required: true
+        default: "Yash-Kavaiya"
+      github_repo:
+        description: "GitHub repository name"
+        required: true
+        default: "cx-agent-studio-ci-cd-scrapi"
+
+jobs:
+  bootstrap:
+    name: "Create SA · WIF · IAM"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Authenticate to GCP (with stored JSON key – bootstrap only)
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_BOOTSTRAP_SA_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Derive project number
+        id: project
+        run: |
+          NUM=$(gcloud projects describe "${{ inputs.gcp_project_id }}" \
+                  --format="value(projectNumber)")
+          echo "number=$NUM" >> "$GITHUB_OUTPUT"
+          echo "Project number: $NUM"
+
+      - name: Create CI/CD service account
+        run: |
+          SA_EMAIL="cxas-cicd@${{ inputs.gcp_project_id }}.iam.gserviceaccount.com"
+          if gcloud iam service-accounts describe "$SA_EMAIL" \
+               --project="${{ inputs.gcp_project_id }}" &>/dev/null; then
+            echo "Service account already exists – skipping creation."
+          else
+            gcloud iam service-accounts create cxas-cicd \
+              --project="${{ inputs.gcp_project_id }}" \
+              --display-name="CXAS CI/CD Bot"
+            echo "Service account created: $SA_EMAIL"
+          fi
+
+      - name: Grant IAM roles to service account
+        run: |
+          SA="serviceAccount:cxas-cicd@${{ inputs.gcp_project_id }}.iam.gserviceaccount.com"
+          for ROLE in \
+            roles/ces.developer \
+            roles/iam.serviceAccountTokenCreator; do
+            gcloud projects add-iam-policy-binding "${{ inputs.gcp_project_id }}" \
+              --member="$SA" \
+              --role="$ROLE" \
+              --condition=None \
+              --quiet
+            echo "  ✓ Granted $ROLE"
+          done
+
+      - name: Create Workload Identity Pool
+        run: |
+          EXISTS=$(gcloud iam workload-identity-pools describe github-pool \
+                     --project="${{ inputs.gcp_project_id }}" \
+                     --location=global \
+                     --format="value(name)" 2>/dev/null || true)
+          if [ -n "$EXISTS" ]; then
+            echo "WIF pool already exists – skipping."
+          else
+            gcloud iam workload-identity-pools create github-pool \
+              --project="${{ inputs.gcp_project_id }}" \
+              --location=global \
+              --display-name="GitHub Actions Pool"
+            echo "WIF pool created."
+          fi
+
+      - name: Create Workload Identity Provider
+        run: |
+          EXISTS=$(gcloud iam workload-identity-pools providers describe github-provider \
+                     --project="${{ inputs.gcp_project_id }}" \
+                     --location=global \
+                     --workload-identity-pool=github-pool \
+                     --format="value(name)" 2>/dev/null || true)
+          if [ -n "$EXISTS" ]; then
+            echo "WIF provider already exists – skipping."
+          else
+            gcloud iam workload-identity-pools providers create-oidc github-provider \
+              --project="${{ inputs.gcp_project_id }}" \
+              --location=global \
+              --workload-identity-pool=github-pool \
+              --display-name="GitHub OIDC Provider" \
+              --attribute-mapping="google.subject=assertion.sub,attribute.actor=assertion.actor,attribute.repository=assertion.repository" \
+              --issuer-uri="https://token.actions.githubusercontent.com"
+            echo "WIF provider created."
+          fi
+
+      - name: Bind service account to WIF pool (this repo only)
+        run: |
+          gcloud iam service-accounts add-iam-policy-binding \
+            "cxas-cicd@${{ inputs.gcp_project_id }}.iam.gserviceaccount.com" \
+            --project="${{ inputs.gcp_project_id }}" \
+            --role="roles/iam.workloadIdentityUser" \
+            --member="principalSet://iam.googleapis.com/projects/${{ steps.project.outputs.number }}/locations/global/workloadIdentityPools/github-pool/attribute.repository/${{ inputs.github_org }}/${{ inputs.github_repo }}" \
+            --condition=None \
+            --quiet
+          echo "Binding created."
+
+      - name: Print WIF Provider string (copy this into GCP_WIF_PROVIDER secret)
+        run: |
+          echo ""
+          echo "════════════════════════════════════════════════════════════"
+          echo "  Copy the value below into your GitHub secret GCP_WIF_PROVIDER:"
+          echo ""
+          echo "  projects/${{ steps.project.outputs.number }}/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+          echo ""
+          echo "  GCP_SA_EMAIL secret value:"
+          echo "  cxas-cicd@${{ inputs.gcp_project_id }}.iam.gserviceaccount.com"
+          echo "════════════════════════════════════════════════════════════"
+
+      - name: Set GCP_WIF_PROVIDER as repo secret via gh CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          WIF="projects/${{ steps.project.outputs.number }}/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+          SA="cxas-cicd@${{ inputs.gcp_project_id }}.iam.gserviceaccount.com"
+
+          gh secret set GCP_WIF_PROVIDER \
+            --repo "${{ inputs.github_org }}/${{ inputs.github_repo }}" \
+            --body "$WIF"
+          echo "  ✓ Secret GCP_WIF_PROVIDER set"
+
+          gh secret set GCP_SA_EMAIL \
+            --repo "${{ inputs.github_org }}/${{ inputs.github_repo }}" \
+            --body "$SA"
+          echo "  ✓ Secret GCP_SA_EMAIL set"
+
+      - name: Set environment variables via gh CLI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ inputs.github_org }}/${{ inputs.github_repo }}"
+          LOC="${{ inputs.gcp_location }}"
+          PROJ="${{ inputs.gcp_project_id }}"
+
+          # dev
+          gh variable set GCP_PROJECT_ID_DEV --repo "$REPO" --env dev --body "$PROJ"
+          gh variable set GCP_LOCATION        --repo "$REPO" --env dev --body "$LOC"
+          echo "  ✓ dev variables set (CXAS_APP_ID_DEV must be set manually)"
+
+          # qa
+          gh variable set GCP_PROJECT_ID_QA  --repo "$REPO" --env qa  --body "$PROJ"
+          gh variable set GCP_LOCATION        --repo "$REPO" --env qa  --body "$LOC"
+          echo "  ✓ qa variables set (CXAS_APP_ID_QA must be set manually)"
+
+          # prod
+          gh variable set GCP_PROJECT_ID_PROD --repo "$REPO" --env prod --body "$PROJ"
+          gh variable set GCP_LOCATION         --repo "$REPO" --env prod --body "$LOC"
+          gh variable set CXAS_APP_ID_PROD     --repo "$REPO" --env prod \
+            --body "8f308ef3-ded1-469a-bb06-8b0af3e8816c"
+          echo "  ✓ prod variables set"
+
+          echo ""
+          echo "Remaining manual steps:"
+          echo "  1. Set CXAS_APP_ID_DEV  in the 'dev'  environment"
+          echo "  2. Set CXAS_APP_ID_QA   in the 'qa'   environment"
+          echo "  3. Add required reviewers to the 'prod-approval' environment"
+          echo "     → https://github.com/$REPO/settings/environments"

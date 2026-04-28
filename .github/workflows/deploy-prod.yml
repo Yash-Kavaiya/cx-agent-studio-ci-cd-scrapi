@@ -1,6 +1,6 @@
 # Deploy to Production environment
 # Triggered on push to `main` branch OR manual dispatch.
-# The `prod` GitHub Environment must have a required reviewer configured
+# The `prod-approval` GitHub Environment must have required reviewers configured
 # so every production deploy requires explicit human approval.
 
 name: Deploy · Prod
@@ -26,8 +26,8 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   # ── Manual approval gate ──────────────────────────────────────────────────
-  # Configure the `prod` environment in GitHub → Settings → Environments
-  # with required reviewers. This job will pause until approved.
+  # Configure the `prod-approval` environment in GitHub → Settings → Environments
+  # with required reviewers. This job pauses until approved.
   approval:
     name: "Await Production Approval"
     needs: ci
@@ -52,7 +52,14 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout CI/CD config repo
+        uses: actions/checkout@v4
+
+      - name: Checkout cxas-scrapi source
+        uses: actions/checkout@v4
+        with:
+          repository: GoogleCloudPlatform/cxas-scrapi
+          path: src
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -64,9 +71,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-          cache: pip
 
       - name: Install cxas-scrapi & deps
+        working-directory: src
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
@@ -81,6 +88,7 @@ jobs:
         run: python scripts/deploy.py
 
       - name: Run production smoke tests
+        working-directory: src
         env:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID_PROD }}
           GCP_LOCATION: ${{ vars.GCP_LOCATION }}
