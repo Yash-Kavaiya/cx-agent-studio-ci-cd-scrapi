@@ -97,7 +97,7 @@ jobs:
 
       - name: Upload test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-tools-report
           path: ${{ env.SOURCE_DIR }}/reports/test-tools.xml
@@ -144,7 +144,7 @@ jobs:
 
       - name: Upload test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-callbacks-report
           path: ${{ env.SOURCE_DIR }}/reports/test-callbacks.xml
@@ -194,7 +194,7 @@ jobs:
 
       - name: Upload full test report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-all-report
           path: |
