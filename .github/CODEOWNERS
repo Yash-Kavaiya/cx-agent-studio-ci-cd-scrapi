@@ -1,0 +1,6 @@
+# Default owners for the whole repo
+* @Yash-Kavaiya
+
+# Critical paths: require review from senior engineers
+.github/workflows/deploy-prod.yml     @Yash-Kavaiya
+scripts/deploy.py                      @Yash-Kavaiya
