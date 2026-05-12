@@ -53,10 +53,10 @@ jobs:
 
     steps:
       - name: Checkout CI/CD config repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Checkout cxas-scrapi source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: GoogleCloudPlatform/cxas-scrapi
           path: src
